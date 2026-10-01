@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Domino Chain Reaction Topple Sim</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  canvas { display: block; touch-action: none; cursor: crosshair; }
+  body { background: #1a1a2e; }
+</style>
+</head>
+<body class="min-h-screen flex flex-col items-center font-sans text-white pt-8">
+<div class="w-full max-w-3xl px-4">
+  <h1 class="text-2xl font-bold text-center mb-1">Domino Chain Reaction</h1>
+  <p class="text-center text-slate-400 text-sm mb-4">Click the canvas to place dominoes (max 50), then topple!</p>
+
+  <!-- HUD -->
+  <div class="flex gap-4 justify-center mb-3 flex-wrap text-sm text-slate-300">
+    <span>Dominoes: <strong id="countDisplay">0</strong> / 50</span>
+    <span>Fell: <strong id="fellDisplay" class="text-yellow-400">0</strong></span>
+  </div>
+
+  <!-- Canvas -->
+  <div class="rounded-xl overflow-hidden shadow-2xl border border-slate-700 mb-4">
+    <canvas id="simCanvas" width="700" height="400" aria-label="Domino placement canvas"></canvas>
+  </div>
+
+  <!-- Controls -->
+  <div class="flex gap-3 flex-wrap justify-center mb-4">
+    <button onclick="topple()" id="btnTopple" class="px-5 py-2.5 rounded-xl bg-orange-600 hover:bg-orange-700 font-bold text-sm" aria-label="Start topple chain reaction">Topple!</button>
+    <button onclick="slowMotionReplay()" id="btnReplay" class="px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 font-bold text-sm disabled:opacity-50" aria-label="Slow motion replay" disabled>Slow Motion Replay</button>
+    <button onclick="resetSim()" class="px-5 py-2.5 rounded-xl bg-slate-600 hover:bg-slate-700 font-bold text-sm" aria-label="Reset and clear all dominoes">Reset</button>
+  </div>
+
+  <p class="text-center text-slate-500 text-xs">Click to place dominoes. They topple left-to-right by proximity.</p>
+</div>
+
+<script>
+const canvas = document.getElementById('simCanvas');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+const MAX_DOMINOES = 50;
+const DOMINO_W = 10, DOMINO_H = 30;
+const GROUND_Y = H - 20;
+const TOPPLE_RANGE = 40; // domino falls if neighbor within this range
+const FALL_SPEED = 3; // degrees per frame
+const SLOW_FACTOR = 0.3;
+
+let dominoes = []; // { x, y, angle, fallen, falling }
+let animating = false;
+let animId = null;
+let history = []; // snapshot for replay
+let fellCount = 0;
+let speedMult = 1;
+
+canvas.addEventListener('click', e => {
+  if (animating) return;
+  if (dominoes.length >= MAX_DOMINOES) return;
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = W / rect.width;
+  const scaleY = H / rect.height;
+  const x = (e.clientX - rect.left) * scaleX;
+  const y = GROUND_Y - DOMINO_H / 2;
+  dominoes.push({ x, y, angle: 0, fallen: false, falling: false });
+  updateCount();
+  drawFrame();
+});
+
+canvas.addEventListener('touchstart', e => {
+  if (animating) return;
+  e.preventDefault();
+  if (dominoes.length >= MAX_DOMINOES) return;
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = W / rect.width;
+  const scaleY = H / rect.height;
+  const touch = e.changedTouches[0];
+  const x = (touch.clientX - rect.left) * scaleX;
+  const y = GROUND_Y - DOMINO_H / 2;
+  dominoes.push({ x, y, angle: 0, fallen: false, falling: false });
+  updateCount();
+  drawFrame();
+}, { passive: false });
+
+function updateCount() {
+  document.getElementById('countDisplay').textContent = dominoes.length;
+}
+
+function drawDomino(d) {
+  ctx.save();
+  ctx.translate(d.x, d.y + DOMINO_H / 2);
+  const rad = (d.angle * Math.PI) / 180;
+  ctx.rotate(rad);
+  ctx.translate(-DOMINO_W / 2, -DOMINO_H);
+
+  // Shadow
+  ctx.shadowColor = 'rgba(0,0,0,0.4)';
+  ctx.shadowBlur = 4;
+  ctx.shadowOffsetX = 2;
+  ctx.shadowOffsetY = 2;
+
+  // Body
+  const grad = ctx.createLinearGradient(0, 0, DOMINO_W, 0);
+  if (d.fallen) {
+    grad.addColorStop(0, '#f87171');
+    grad.addColorStop(1, '#ef4444');
+  } else if (d.falling) {
+    grad.addColorStop(0, '#fb923c');
+    grad.addColorStop(1, '#f97316');
+  } else {
+    grad.addColorStop(0, '#e2e8f0');
+    grad.addColorStop(1, '#94a3b8');
+  }
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.roundRect(0, 0, DOMINO_W, DOMINO_H, 2);
+  ctx.fill();
+
+  // Dots
+  ctx.shadowColor = 'transparent';
+  ctx.fillStyle = d.fallen ? '#fca5a5' : '#334155';
+  const dotR = 1.5;
+  [[DOMINO_W/2, 8],[DOMINO_W/2, DOMINO_H/2],[DOMINO_W/2, DOMINO_H-8]].forEach(([dx,dy]) => {
+    ctx.beginPath();
+    ctx.arc(dx, dy, dotR, 0, Math.PI*2);
+    ctx.fill();
+  });
+
+  ctx.restore();
+}
+
+function drawFrame() {
+  ctx.fillStyle = '#16213e';
+  ctx.fillRect(0, 0, W, H);
+
+  // Ground
+  ctx.fillStyle = '#334155';
+  ctx.fillRect(0, GROUND_Y, W, H - GROUND_Y);
+  ctx.strokeStyle = '#475569';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, GROUND_Y);
+  ctx.lineTo(W, GROUND_Y);
+  ctx.stroke();
+
+  // Sort by x for drawing order
+  const sorted = [...dominoes].sort((a, b) => a.x - b.x);
+  sorted.forEach(d => drawDomino(d));
+
+  // Counter
+  document.getElementById('fellDisplay').textContent = fellCount;
+}
+
+function topple() {
+  if (dominoes.length === 0) return;
+  if (animating) return;
+  // Save snapshot for replay
+  history = JSON.parse(JSON.stringify(dominoes));
+  fellCount = 0;
+  // Sort left to right, trigger leftmost
+  dominoes.sort((a, b) => a.x - b.x);
+  dominoes[0].falling = true;
+  animating = true;
+  speedMult = 1;
+  document.getElementById('btnTopple').disabled = true;
+  animate();
+}
+
+function animate() {
+  let anyActive = false;
+  dominoes.forEach((d, idx) => {
+    if (!d.falling && !d.fallen) return;
+    if (d.fallen) return;
+    anyActive = true;
+    d.angle += FALL_SPEED * speedMult;
+    if (d.angle >= 90) {
+      d.angle = 90;
+      d.fallen = true;
+      d.falling = false;
+      fellCount++;
+      // Check who gets knocked
+      const tipX = d.x + DOMINO_H * Math.sin((90 * Math.PI) / 180);
+      dominoes.forEach((other, oi) => {
+        if (oi === idx) return;
+        if (other.falling || other.fallen) return;
+        if (Math.abs(other.x - d.x) < TOPPLE_RANGE && other.x > d.x) {
+          other.falling = true;
+        }
+      });
+    }
+  });
+
+  drawFrame();
+
+  if (anyActive) {
+    animId = requestAnimationFrame(animate);
+  } else {
+    animating = false;
+    document.getElementById('btnTopple').disabled = false;
+    document.getElementById('btnReplay').disabled = false;
+  }
+}
+
+function slowMotionReplay() {
+  if (!history.length) return;
+  dominoes = JSON.parse(JSON.stringify(history));
+  fellCount = 0;
+  dominoes.sort((a, b) => a.x - b.x);
+  dominoes[0].falling = true;
+  animating = true;
+  speedMult = SLOW_FACTOR;
+  cancelAnimationFrame(animId);
+  document.getElementById('btnTopple').disabled = true;
+  document.getElementById('btnReplay').disabled = true;
+  animate();
+}
+
+function resetSim() {
+  cancelAnimationFrame(animId);
+  animating = false;
+  dominoes = [];
+  history = [];
+  fellCount = 0;
+  document.getElementById('btnTopple').disabled = false;
+  document.getElementById('btnReplay').disabled = true;
+  updateCount();
+  drawFrame();
+}
+
+drawFrame();
+</script>
+</body>
+</html>
